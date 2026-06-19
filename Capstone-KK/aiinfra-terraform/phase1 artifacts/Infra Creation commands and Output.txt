@@ -1,0 +1,801 @@
+selct subscription -- apply
+
+Set environment variable
+---
+PARTICIPANT_NAME='Kamlesh'
+UBUNTU_PASS='Training@123'
+WINDOWS_PASS='Training@123'
+LOCATION='eastus'
+RG="rg-aiinfra-${PARTICIPANT_NAME}"
+UBUNTU_VM='vm-lab-ubuntu'
+WINDOWS_VM='vm-lab-win'
+UBUNTU_USER='labadmin'
+WINDOWS_USER='labadmin'
+
+Creating resource group
+----
+az group create \
+  --name "${RG}" \
+  --location "${LOCATION}" \
+  --tags programme='AI-Infra-Engineers' day='3' \
+         participant="${PARTICIPANT_NAME}" \
+  --output table
+
+output:
+Location    Name
+----------  ------------------
+eastus      rg-aiinfra-Kamlesh
+
+=============
+Create ubuntu VM without wait
+---
+az vm create \
+  --resource-group "${RG}" \
+  --name "${UBUNTU_VM}" \
+  --image Ubuntu2204 \
+  --size Standard_B2s \
+  --admin-username "${UBUNTU_USER}" \
+  --admin-password "${UBUNTU_PASS}" \
+  --authentication-type password \
+  --public-ip-sku Standard \
+  --nsg-rule SSH \
+  --os-disk-size-gb 30 \
+  --no-wait \
+  --output none
+
+output:
+Consider upgrading security for your workloads using Azure Trusted Launch VMs. To know more about Trusted Launch, please visit https://aka.ms/TrustedLaunch.
+training [ ~ ]$ 
+
+
+Create windows VM
+---
+az vm create \
+  --resource-group "${RG}" \
+  --name "${WINDOWS_VM}" \
+  --image Win2022Datacenter \
+  --size Standard_B2s \
+  --admin-username "${WINDOWS_USER}" \
+  --admin-password "${WINDOWS_PASS}" \
+  --authentication-type password \
+  --public-ip-sku Standard \
+  --nsg-rule RDP \
+  --os-disk-size-gb 128 \
+  --no-wait \
+  --output none
+
+Check the vm in portal
+
+output:
+Consider upgrading security for your workloads using Azure Trusted Launch VMs. To know more about Trusted Launch, please visit https://aka.ms/TrustedLaunch.
+training [ ~ ]$ 
+==============
+
+get public IP
+
+az vm list-ip-addresses \
+  --resource-group "${RG}" \
+  --name "${UBUNTU_VM}" \
+  --output table
+
+VirtualMachine    PublicIPAddresses    PrivateIPAddresses
+----------------  -------------------  --------------------
+vm-lab-ubuntu     20.102.85.214        10.0.0.4
+
+
+
+===========
+Check the vm in portal
+---
+azure -- virtual machines
+
+Install tools and create scriptis in the ubuntu vm
+---
+az vm run-command invoke \
+  --resource-group "${RG}" \
+  --name "${UBUNTU_VM}" \
+  --command-id RunShellScript \
+  --scripts '
+    set -e
+
+    # ── Install tools ────────────────────────────────────────────
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y \
+      stress-ng \
+      sysstat \
+      net-tools \
+      htop \
+      iotop \
+      fio \
+      python3-pip \
+      python3-psycopg2 \
+      iproute2 \
+      dnsutils \
+      jq \
+      curl \
+      git \
+      bc \
+      shellcheck \
+      tcpdump \
+      nmap \
+      lsof \
+      tree
+    echo "[1/3] Tools installed"
+
+    # ── Create directories ───────────────────────────────────────
+    mkdir -p /opt/lab-scripts/evidence
+    mkdir -p /opt/lab-scripts/compute
+    mkdir -p /opt/lab-scripts/network
+    mkdir -p /opt/lab-scripts/storage
+    mkdir -p /opt/lab-scripts/diagnostic-data
+    chmod -R 777 /opt/lab-scripts
+    echo "[2/3] Directories created"
+
+    # ── Create lab scripts ───────────────────────────────────────
+
+    # compute/01-cpu-stress.sh
+    cat > /opt/lab-scripts/compute/01-cpu-stress.sh << ENDSCRIPT
+#!/bin/bash
+DURATION=\${1:-300}
+WORKERS=\${2:-2}
+echo "[CPU-STRESS] Starting \${DURATION}s with \${WORKERS} workers..."
+nohup stress-ng --cpu "\$WORKERS" --timeout "\${DURATION}s" \
+  --metrics-brief > /tmp/cpu-stress.log 2>&1 &
+echo \$! > /tmp/cpu-stress.pid
+echo "[CPU-STRESS] PID: \$(cat /tmp/cpu-stress.pid)"
+echo "[CPU-STRESS] Stop with: kill \$(cat /tmp/cpu-stress.pid)"
+ENDSCRIPT
+
+    # compute/02-memory-leak.sh
+    cat > /opt/lab-scripts/compute/02-memory-leak.sh << ENDSCRIPT
+#!/bin/bash
+TARGET_MB=\${1:-2500}
+echo "[MEM-STRESS] Consuming \${TARGET_MB}MB RAM..."
+nohup stress-ng --vm 1 --vm-bytes "\${TARGET_MB}M" --vm-keep \
+  --timeout 300s > /tmp/mem-stress.log 2>&1 &
+echo \$! > /tmp/mem-stress.pid
+echo "[MEM-STRESS] PID: \$(cat /tmp/mem-stress.pid)"
+echo "[MEM-STRESS] Stop with: kill \$(cat /tmp/mem-stress.pid)"
+ENDSCRIPT
+
+    # compute/03-generate-diagnostics.sh
+    cat > /opt/lab-scripts/compute/03-generate-diagnostics.sh << ENDSCRIPT
+#!/bin/bash
+OUT=/opt/lab-scripts/diagnostic-data
+mkdir -p \$OUT
+echo "[DIAG] Capturing diagnostics to \$OUT ..."
+vmstat 1 5                        > \$OUT/vmstat.txt    2>&1
+top -bn3 | head -40               > \$OUT/top.txt       2>&1
+free -m                           > \$OUT/free.txt
+cat /proc/meminfo | head -20      >> \$OUT/free.txt
+ps aux --sort=-%cpu | head -15    > \$OUT/ps-cpu.txt
+ps aux --sort=-%mem | head -15    > \$OUT/ps-mem.txt
+iostat -x 1 3                     > \$OUT/iostat.txt    2>&1
+ss -s                             > \$OUT/ss-summary.txt 2>&1
+journalctl -n 20 --no-pager       > \$OUT/journal.txt   2>/dev/null \
+  || tail -20 /var/log/syslog     > \$OUT/journal.txt   2>/dev/null
+echo "[DIAG] Done. Files saved:"
+ls -lh \$OUT/
+ENDSCRIPT
+
+    # network/01-latency-inject.sh
+    cat > /opt/lab-scripts/network/01-latency-inject.sh << ENDSCRIPT
+#!/bin/bash
+IFACE=\${1:-eth0}
+LATENCY=\${2:-200}
+JITTER=\${3:-50}
+echo "[LATENCY] Injecting \${LATENCY}ms +/- \${JITTER}ms on \$IFACE..."
+tc qdisc add dev "\$IFACE" root netem delay "\${LATENCY}ms" "\${JITTER}ms" distribution normal
+echo "[LATENCY] Applied."
+echo "[LATENCY] Verify:  ping -c5 8.8.8.8"
+echo "[LATENCY] Remove:  sudo tc qdisc del dev \$IFACE root"
+ENDSCRIPT
+
+    # network/02-route-misconfigure.sh
+    cat > /opt/lab-scripts/network/02-route-misconfigure.sh << ENDSCRIPT
+#!/bin/bash
+echo "[ROUTE] Adding misconfigured static route 10.0.2.0/24 via 10.0.1.254..."
+ip route add 10.0.2.0/24 via 10.0.1.254 2>/dev/null \
+  || echo "[ROUTE] Route already exists — continuing"
+echo "[ROUTE] Current routing table:"
+ip route show
+echo "[ROUTE] Restore with: sudo ip route del 10.0.2.0/24 via 10.0.1.254"
+ENDSCRIPT
+
+    # network/03-restore-network.sh
+    cat > /opt/lab-scripts/network/03-restore-network.sh << ENDSCRIPT
+#!/bin/bash
+echo "[RESTORE] Removing tc latency rules..."
+tc qdisc del dev eth0 root 2>/dev/null \
+  || echo "[RESTORE] No tc rules found"
+echo "[RESTORE] Removing bad static route..."
+ip route del 10.0.2.0/24 via 10.0.1.254 2>/dev/null \
+  || echo "[RESTORE] No bad route found"
+echo "[RESTORE] Network restored."
+echo "[RESTORE] Current routing table:"
+ip route show
+ENDSCRIPT
+
+    # storage/01-io-stress.sh
+    cat > /opt/lab-scripts/storage/01-io-stress.sh << ENDSCRIPT
+#!/bin/bash
+DURATION=\${1:-120}
+echo "[IO-STRESS] Starting \${DURATION}s I/O contention simulation..."
+echo "[IO-STRESS] Two workers: production random writes + backup sequential reads"
+fio --name=prod-writes \
+    --ioengine=sync \
+    --rw=randrw \
+    --bs=4k \
+    --numjobs=1 \
+    --size=100M \
+    --runtime=\$DURATION \
+    --filename=/tmp/prod-data.tmp \
+    --output=/opt/lab-scripts/fio-prod.txt &
+fio --name=backup-reads \
+    --ioengine=sync \
+    --rw=read \
+    --bs=512k \
+    --numjobs=2 \
+    --size=200M \
+    --runtime=\$DURATION \
+    --filename=/tmp/backup-data.tmp \
+    --output=/opt/lab-scripts/fio-backup.txt &
+echo "[IO-STRESS] Workers started."
+echo "[IO-STRESS] Monitor: iostat -x 1 8"
+echo "[IO-STRESS] Stop:    sudo pkill fio"
+ENDSCRIPT
+
+    # storage/02-disk-fill.sh
+    cat > /opt/lab-scripts/storage/02-disk-fill.sh << ENDSCRIPT
+#!/bin/bash
+FILL_TARGET=80
+OUTPUT_DIR=/tmp/lab-disk-fill
+mkdir -p \$OUTPUT_DIR
+CUR_PCT=\$(df / | tail -1 | awk "{print \$5}" | tr -d "%")
+echo "[DISK-FILL] Current disk usage: \${CUR_PCT}%"
+if [ "\$CUR_PCT" -ge "\$FILL_TARGET" ]; then
+  echo "[DISK-FILL] Already at \${CUR_PCT}% — no fill needed"
+  exit 0
+fi
+TOTAL_KB=\$(df / | tail -1 | awk "{print \$2}")
+USED_KB=\$(df  / | tail -1 | awk "{print \$3}")
+TARGET_KB=\$(( TOTAL_KB * FILL_TARGET / 100 ))
+WRITE_KB=\$(( TARGET_KB - USED_KB - 512000 ))
+if [ "\$WRITE_KB" -le 0 ]; then
+  echo "[DISK-FILL] Safety margin — skipping fill"
+  exit 0
+fi
+WRITE_MB=\$(( WRITE_KB / 1024 ))
+echo "[DISK-FILL] Writing \${WRITE_MB}MB to reach \${FILL_TARGET}%..."
+dd if=/dev/zero of=\$OUTPUT_DIR/fill-file.dat bs=1M count=\$WRITE_MB status=progress
+echo "[DISK-FILL] Disk now: \$(df / | tail -1 | awk "{print \$5}")"
+echo "[DISK-FILL] Remove:   sudo rm -f \$OUTPUT_DIR/fill-file.dat"
+ENDSCRIPT
+
+    # Make all scripts executable
+    chmod +x /opt/lab-scripts/compute/01-cpu-stress.sh
+    chmod +x /opt/lab-scripts/compute/02-memory-leak.sh
+    chmod +x /opt/lab-scripts/compute/03-generate-diagnostics.sh
+    chmod +x /opt/lab-scripts/network/01-latency-inject.sh
+    chmod +x /opt/lab-scripts/network/02-route-misconfigure.sh
+    chmod +x /opt/lab-scripts/network/03-restore-network.sh
+    chmod +x /opt/lab-scripts/storage/01-io-stress.sh
+    chmod +x /opt/lab-scripts/storage/02-disk-fill.sh
+
+    echo "[3/3] Lab scripts created"
+    echo ""
+    echo "=== Setup complete. Verification ==="
+    echo ""
+    echo "-- Tools --"
+    for tool in stress-ng iostat vmstat htop iotop fio shellcheck lsof; do
+      command -v $tool > /dev/null 2>&1 && echo "  ok  $tool" || echo "  MISSING  $tool"
+    done
+    echo ""
+    echo "-- Scripts --"
+    ls /opt/lab-scripts/compute/
+    ls /opt/lab-scripts/network/
+    ls /opt/lab-scripts/storage/
+  ' \
+  --output table
+
+===================
+
+
+
+ssh labadmin@<UBUNTU_IP_FROM_ABOVE>
+  
+password: Training@123
+
+ssh labadmin@20.102.85.214
+
+output===
+
+training [ ~ ]$ ssh labadmin@20.102.85.214
+The authenticity of host '20.102.85.214 (20.102.85.214)' can't be established.
+ED25519 key fingerprint is SHA256:ClwXN4pD00QauY5f9m3tFC3l1DKsOOP+FQtqoaTzXVc.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '20.102.85.214' (ED25519) to the list of known hosts.
+labadmin@20.102.85.214's password: 
+Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 6.8.0-1059-azure x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Fri Jun 19 05:25:30 UTC 2026
+
+  System load:  0.25              Processes:             118
+  Usage of /:   8.0% of 28.89GB   Users logged in:       0
+  Memory usage: 8%                IPv4 address for eth0: 10.0.0.4
+  Swap usage:   0%
+
+Expanded Security Maintenance for Applications is not enabled.
+
+6 updates can be applied immediately.
+6 of these updates are standard security updates.
+To see these additional updates run: apt list --upgradable
+
+1 additional security update can be applied with ESM Apps.
+Learn more about enabling ESM Apps service at https://ubuntu.com/esm
+
+
+
+The programs included with the Ubuntu system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Ubuntu comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
+applicable law.
+
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+=============================
+run below command to validate
+---
+  bash -c '
+PASS=0; FAIL=0
+chk() { if [ "$2" = "ok" ]; then echo "  ✓  $1"; PASS=$((PASS+1)); else echo "  ✗  $1"; FAIL=$((FAIL+1)); fi }
+
+echo ""
+echo "=== TOOLS ==="
+for t in stress-ng iostat vmstat sar htop iotop fio shellcheck tcpdump lsof nmap jq python3 git bc; do
+  command -v "$t" >/dev/null 2>&1 && chk "$t" "ok" || chk "$t" "fail"
+done
+
+echo ""
+echo "=== DIRECTORIES ==="
+for d in /opt/lab-scripts /opt/lab-scripts/evidence /opt/lab-scripts/compute /opt/lab-scripts/network /opt/lab-scripts/storage /opt/lab-scripts/diagnostic-data; do
+  [ -d "$d" ] && chk "$d" "ok" || chk "$d" "fail"
+done
+
+echo ""
+echo "=== SCRIPTS ==="
+for s in compute/01-cpu-stress.sh compute/02-memory-leak.sh compute/03-generate-diagnostics.sh network/01-latency-inject.sh network/02-route-misconfigure.sh network/03-restore-network.sh storage/01-io-stress.sh storage/02-disk-fill.sh; do
+  [ -x "/opt/lab-scripts/$s" ] && chk "$s" "ok" || chk "$s" "fail"
+done
+
+echo ""
+echo "=== FUNCTIONAL ==="
+vmstat 1 2 >/dev/null 2>&1                                                          && chk "vmstat runs"              "ok" || chk "vmstat runs"              "fail"
+iostat -x 1 2 >/dev/null 2>&1                                                       && chk "iostat runs"              "ok" || chk "iostat runs"              "fail"
+stress-ng --cpu 1 --timeout 3s >/dev/null 2>&1                                      && chk "stress-ng runs"           "ok" || chk "stress-ng runs"           "fail"
+fio --name=t --ioengine=sync --rw=write --bs=4k --size=1M --filename=/tmp/fio-val.tmp --output=/tmp/fio-val.log >/dev/null 2>&1 && rm -f /tmp/fio-val.tmp /tmp/fio-val.log && chk "fio runs" "ok" || chk "fio runs" "fail"
+python3 -c "import psycopg2" >/dev/null 2>&1                                        && chk "psycopg2 importable"      "ok" || chk "psycopg2 importable"      "fail"
+touch /opt/lab-scripts/evidence/.wtest 2>/dev/null && rm -f /opt/lab-scripts/evidence/.wtest && chk "/opt/lab-scripts writable" "ok" || chk "/opt/lab-scripts writable" "fail"
+FREE=$(df / | tail -1 | awk "{printf \"%d\", \$4/1024/1024}"); [ "$FREE" -ge 5 ]    && chk "disk space (${FREE}GB free)" "ok" || chk "disk space (${FREE}GB free)" "fail"
+
+echo ""
+echo "=============================="
+echo "  PASSED: $PASS   FAILED: $FAIL"
+echo "=============================="
+[ "$FAIL" -eq 0 ] && echo "  VM ready for Day 3 labs." || echo "  Fix items marked ✗ before starting."
+echo ""
+'
+=========
+output
+
+=== TOOLS ===
+  ✓  stress-ng
+  ✓  iostat
+  ✓  vmstat
+  ✓  sar
+  ✓  htop
+  ✓  iotop
+  ✓  fio
+  ✓  shellcheck
+  ✓  tcpdump
+  ✓  lsof
+  ✓  nmap
+  ✓  jq
+  ✓  python3
+  ✓  git
+  ✓  bc
+
+=== DIRECTORIES ===
+  ✓  /opt/lab-scripts
+  ✓  /opt/lab-scripts/evidence
+  ✓  /opt/lab-scripts/compute
+  ✓  /opt/lab-scripts/network
+  ✓  /opt/lab-scripts/storage
+  ✓  /opt/lab-scripts/diagnostic-data
+
+=== SCRIPTS ===
+  ✓  compute/01-cpu-stress.sh
+  ✓  compute/02-memory-leak.sh
+  ✓  compute/03-generate-diagnostics.sh
+  ✓  network/01-latency-inject.sh
+  ✓  network/02-route-misconfigure.sh
+  ✓  network/03-restore-network.sh
+  ✓  storage/01-io-stress.sh
+  ✓  storage/02-disk-fill.sh
+
+=== FUNCTIONAL ===
+  ✓  vmstat runs
+  ✓  iostat runs
+  ✓  stress-ng runs
+  ✓  fio runs
+  ✓  psycopg2 importable
+  ✓  /opt/lab-scripts writable
+  ✓  disk space (26GB free)
+
+==============================
+  PASSED: 36   FAILED: 0
+==============================
+  VM ready for Day 3 labs.
+============
+
+
+
+Connect to windows vm via rdp
+---
+azure -- virtual machines -- get windows ip
+138.91.115.12
+
+On lab server -- search "mstsc" -- computer : "windows vm ip"
+
+username: labadmin
+password : Training@123
+
+open power shell on windows vm
+---
+windows vm -- serach -- powershell -- right click "Run as administrator"
+
+Paste entire block into PowerShell on the Windows VM
+---
+
+# ── Install features ─────────────────────────────────────────────
+Write-Host "[1/3] Installing Windows features..."
+Install-WindowsFeature -Name Web-Server -IncludeManagementTools | Out-Null
+Install-WindowsFeature -Name RSAT-AD-Tools -IncludeAllSubFeature -ErrorAction SilentlyContinue | Out-Null
+Write-Host "      IIS and RSAT installed"
+
+# ── Create directories ───────────────────────────────────────────
+Write-Host "[2/3] Creating directories..."
+New-Item -ItemType Directory -Path C:\LabScripts     -Force | Out-Null
+New-Item -ItemType Directory -Path C:\LabDiagnostics -Force | Out-Null
+Write-Host "      C:\LabScripts and C:\LabDiagnostics created"
+
+# ── Create lab scripts ───────────────────────────────────────────
+Write-Host "[3/3] Creating lab scripts..."
+
+# 01-cpu-stress.ps1
+@'
+param(
+    [int]$DurationSeconds = 180,
+    [int]$Workers = 2
+)
+Write-Host "[CPU-STRESS] Starting $Workers workers for $DurationSeconds seconds..."
+Write-Host "[CPU-STRESS] Monitor: Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 10"
+$jobs = 1..$Workers | ForEach-Object {
+    Start-Job -ScriptBlock {
+        $end = (Get-Date).AddSeconds($using:DurationSeconds)
+        while ((Get-Date) -lt $end) {
+            [void][Math]::Sqrt([System.Random]::new().NextDouble() * 1000000)
+        }
+    }
+}
+Write-Host "[CPU-STRESS] $($jobs.Count) jobs running. IDs: $($jobs.Id -join ', ')"
+Write-Host "[CPU-STRESS] Stop: Get-Job | Stop-Job; Get-Job | Remove-Job"
+'@ | Set-Content -Path C:\LabScripts\01-cpu-stress.ps1
+
+# 02-generate-events.ps1
+@'
+$source = 'FinBridgeLab'
+if (-not [System.Diagnostics.EventLog]::SourceExists($source)) {
+    Write-Host "[EVENTS] Registering event source '$source'..."
+    [System.Diagnostics.EventLog]::CreateEventSource($source, 'Application')
+    Start-Sleep -Seconds 3
+}
+
+Write-Host "[EVENTS] Writing Event Log entries..."
+
+# Event 7034 — Service terminated unexpectedly
+Write-EventLog -LogName Application -Source $source -EventId 7034 `
+    -EntryType Error `
+    -Message "The Payment Processing Service service terminated unexpectedly. It has done this 3 time(s). The following corrective action will be taken in 5000 milliseconds: Restart the service."
+
+# Event 1001 — Application crash (OOM)
+Write-EventLog -LogName Application -Source $source -EventId 1001 `
+    -EntryType Warning `
+    -Message "Fault bucket 1432897654321, type 5`nApplication: PaymentService.exe`nFramework Version: v4.0.30319`nDescription: The process was terminated due to an unhandled exception.`nException Info: System.OutOfMemoryException`n  at System.Byte[].InternalBlockCopy`n  at FinBridge.Payment.PaymentProcessor.ProcessBatch(Int32 batchSize)"
+
+# Event 1311 — AD replication failure
+Write-EventLog -LogName Application -Source $source -EventId 1311 `
+    -EntryType Error `
+    -Message "There are currently no logon servers available to service the logon request. The replication operation has failed.`nInternal error: The RPC server is unavailable. (1722)`nThe destination domain controller (DC01.finbridge.internal) could not be contacted."
+
+# Event 4625 — Failed logon
+Write-EventLog -LogName Application -Source $source -EventId 4625 `
+    -EntryType Warning `
+    -Message "An account failed to log on.`nSubject: Security ID: SYSTEM`nLogon Type: 3 (Network logon)`nAccount Name: svc-payment`nAccount Domain: FINBRIDGE`nFailure Reason: Unknown user name or bad password`nLogon Process: NtLmSsp"
+
+Write-Host "[EVENTS] Done. 4 events written to Application log."
+Write-Host "[EVENTS] View: Get-EventLog -LogName Application -Source FinBridgeLab | Format-List"
+'@ | Set-Content -Path C:\LabScripts\02-generate-events.ps1
+
+# 03-generate-diagnostics.ps1
+@'
+$out = 'C:\LabDiagnostics'
+New-Item -ItemType Directory -Path $out -Force | Out-Null
+Write-Host "[DIAG] Capturing diagnostics to $out ..."
+
+# Performance counters — 5 samples
+Write-Host "[DIAG] Collecting performance counters..."
+Get-Counter `
+    '\Processor(_Total)\% Processor Time', `
+    '\Memory\Available MBytes', `
+    '\Memory\% Committed Bytes In Use', `
+    '\PhysicalDisk(_Total)\Avg. Disk sec/Read', `
+    '\PhysicalDisk(_Total)\Avg. Disk sec/Write' `
+    -SampleInterval 2 -MaxSamples 5 |
+    Select-Object -ExpandProperty CounterSamples |
+    Format-Table Timestamp, Path, CookedValue -AutoSize |
+    Out-File "$out\perf-counters.txt"
+
+# Top processes by CPU
+Write-Host "[DIAG] Collecting top processes..."
+Get-Process |
+    Sort-Object CPU -Descending |
+    Select-Object -First 15 `
+        Name, Id,
+        @{N='CPU(s)';    E={[math]::Round($_.CPU, 1)}},
+        @{N='Mem(MB)';   E={[math]::Round($_.WorkingSet / 1MB, 1)}},
+        @{N='Threads';   E={$_.Threads.Count}},
+        Description |
+    Format-Table -AutoSize |
+    Out-File "$out\top-processes.txt"
+
+# Services not running
+Write-Host "[DIAG] Collecting stopped services..."
+Get-Service |
+    Where-Object { $_.Status -ne 'Running' } |
+    Format-Table Status, Name, DisplayName -AutoSize |
+    Out-File "$out\stopped-services.txt"
+
+# Application event log — last 30 entries
+Write-Host "[DIAG] Collecting Application event log..."
+Get-EventLog -LogName Application -Newest 30 |
+    Format-List EventId, EntryType, TimeGenerated, Source, Message |
+    Out-File "$out\app-events.txt"
+
+# System event log — errors and warnings
+Write-Host "[DIAG] Collecting System event log..."
+Get-EventLog -LogName System -EntryType Error, Warning -Newest 20 |
+    Format-List EventId, EntryType, TimeGenerated, Source, Message |
+    Out-File "$out\sys-events.txt"
+
+# Network configuration
+Get-NetIPConfiguration |
+    Out-File "$out\ip-config.txt"
+
+netstat -an |
+    Out-File "$out\netstat.txt"
+
+# Disk space
+Get-PSDrive -PSProvider FileSystem |
+    Format-Table Name, Used, Free, Root -AutoSize |
+    Out-File "$out\disk-space.txt"
+
+Write-Host "[DIAG] Done. Files saved to $out :"
+Get-ChildItem $out | Format-Table Name, Length -AutoSize
+'@ | Set-Content -Path C:\LabScripts\03-generate-diagnostics.ps1
+
+# ── Verify ───────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "=== Setup Complete ==="
+Write-Host ""
+Write-Host "Features:"
+Get-WindowsFeature Web-Server | Format-Table Name, Installed -AutoSize
+
+Write-Host "Scripts:"
+Get-ChildItem C:\LabScripts\ | Format-Table Name, Length -AutoSize
+
+Write-Host "Directories:"
+Get-Item C:\LabScripts, C:\LabDiagnostics | Format-Table FullName -AutoSize
+
+====output
+
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+                                                                                                                        Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows                                                                                                                                                       PS C:\Users\labadmin> # ── Install features ─────────────────────────────────────────────                                                                                                                                                       PS C:\Users\labadmin> Write-Host "[1/3] Installing Windows features..."
+[1/3] Installing Windows features...
+PS C:\Users\labadmin> Install-WindowsFeature -Name Web-Server -IncludeManagementTools | Out-Null
+PS C:\Users\labadmin> Install-WindowsFeature -Name RSAT-AD-Tools -IncludeAllSubFeature -ErrorAction SilentlyContinue | Out-Null
+PS C:\Users\labadmin> Write-Host "      IIS and RSAT installed"
+      IIS and RSAT installed
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # ── Create directories ───────────────────────────────────────────
+
+PS C:\Users\labadmin> Write-Host "[2/3] Creating directories..."
+[2/3] Creating directories...
+PS C:\Users\labadmin> New-Item -ItemType Directory -Path C:\LabScripts     -Force | Out-Null
+PS C:\Users\labadmin> New-Item -ItemType Directory -Path C:\LabDiagnostics -Force | Out-Null
+PS C:\Users\labadmin> Write-Host "      C:\LabScripts and C:\LabDiagnostics created"
+      C:\LabScripts and C:\LabDiagnostics created
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # ── Create lab scripts ───────────────────────────────────────────
+
+PS C:\Users\labadmin> Write-Host "[3/3] Creating lab scripts..."
+[3/3] Creating lab scripts...
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # 01-cpu-stress.ps1
+PS C:\Users\labadmin> @'
+>> param(
+>>     [int]$DurationSeconds = 180,
+>>     [int]$Workers = 2
+>> )
+>> Write-Host "[CPU-STRESS] Starting $Workers workers for $DurationSeconds seconds..."
+>> Write-Host "[CPU-STRESS] Monitor: Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 10"
+>> $jobs = 1..$Workers | ForEach-Object {
+>>     Start-Job -ScriptBlock {
+>>         $end = (Get-Date).AddSeconds($using:DurationSeconds)
+>>         while ((Get-Date) -lt $end) {
+>>             [void][Math]::Sqrt([System.Random]::new().NextDouble() * 1000000)
+>>         }
+>>     }
+>> }
+>> Write-Host "[CPU-STRESS] $($jobs.Count) jobs running. IDs: $($jobs.Id -join ', ')"
+>> Write-Host "[CPU-STRESS] Stop: Get-Job | Stop-Job; Get-Job | Remove-Job"
+>> '@ | Set-Content -Path C:\LabScripts\01-cpu-stress.ps1
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # 02-generate-events.ps1
+PS C:\Users\labadmin> @'
+>> $source = 'FinBridgeLab'
+>> if (-not [System.Diagnostics.EventLog]::SourceExists($source)) {
+>>     Write-Host "[EVENTS] Registering event source '$source'..."
+>>     [System.Diagnostics.EventLog]::CreateEventSource($source, 'Application')
+>>     Start-Sleep -Seconds 3
+>> }
+>>
+>> Write-Host "[EVENTS] Writing Event Log entries..."
+>>
+>> # Event 7034 — Service terminated unexpectedly
+>> Write-EventLog -LogName Application -Source $source -EventId 7034 `
+>>     -EntryType Error `
+>>     -Message "The Payment Processing Service service terminated unexpectedly. It has done this 3 time(s). The following corrective action will be taken in 5000 milliseconds: Restart the service."
+>>
+>> # Event 1001 — Application crash (OOM)
+>> Write-EventLog -LogName Application -Source $source -EventId 1001 `
+>>     -EntryType Warning `
+>>     -Message "Fault bucket 1432897654321, type 5`nApplication: PaymentService.exe`nFramework Version: v4.0.30319`nDescription: The process was terminated due to an unhandled exception.`nException Info: System.OutOfMemoryException`n  at System.Byte[].InternalBlockCopy`n  at FinBridge.Payment.PaymentProcessor.ProcessBatch(Int32 batchSize)"
+>>
+>> # Event 1311 — AD replication failure
+>> Write-EventLog -LogName Application -Source $source -EventId 1311 `
+>>     -EntryType Error `
+>>     -Message "There are currently no logon servers available to service the logon request. The replication operation has failed.`nInternal error: The RPC server is unavailable. (1722)`nThe destination domain controller (DC01.finbridge.internal) could not be contacted."
+>>
+>> # Event 4625 — Failed logon
+>> Write-EventLog -LogName Application -Source $source -EventId 4625 `
+>>     -EntryType Warning `
+>>     -Message "An account failed to log on.`nSubject: Security ID: SYSTEM`nLogon Type: 3 (Network logon)`nAccount Name: svc-payment`nAccount Domain: FINBRIDGE`nFailure Reason: Unknown user name or bad password`nLogon Process: NtLmSsp"
+>>
+>> Write-Host "[EVENTS] Done. 4 events written to Application log."
+>> Write-Host "[EVENTS] View: Get-EventLog -LogName Application -Source FinBridgeLab | Format-List"
+>> '@ | Set-Content -Path C:\LabScripts\02-generate-events.ps1
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # 03-generate-diagnostics.ps1
+PS C:\Users\labadmin> @'
+>> $out = 'C:\LabDiagnostics'
+>> New-Item -ItemType Directory -Path $out -Force | Out-Null
+>> Write-Host "[DIAG] Capturing diagnostics to $out ..."
+>>
+>> # Performance counters — 5 samples
+>> Write-Host "[DIAG] Collecting performance counters..."
+>> Get-Counter `
+>>     '\Processor(_Total)\% Processor Time', `
+>>     '\Memory\Available MBytes', `
+>>     '\Memory\% Committed Bytes In Use', `
+>>     '\PhysicalDisk(_Total)\Avg. Disk sec/Read', `
+>>     '\PhysicalDisk(_Total)\Avg. Disk sec/Write' `
+>>     -SampleInterval 2 -MaxSamples 5 |
+>>     Select-Object -ExpandProperty CounterSamples |
+>>     Format-Table Timestamp, Path, CookedValue -AutoSize |
+>>     Out-File "$out\perf-counters.txt"
+>>
+>> # Top processes by CPU
+>> Write-Host "[DIAG] Collecting top processes..."
+>> Get-Process |
+>>     Sort-Object CPU -Descending |
+>>     Select-Object -First 15 `
+>>         Name, Id,
+>>         @{N='CPU(s)';    E={[math]::Round($_.CPU, 1)}},
+>>         @{N='Mem(MB)';   E={[math]::Round($_.WorkingSet / 1MB, 1)}},
+>>         @{N='Threads';   E={$_.Threads.Count}},
+>>         Description |
+>>     Format-Table -AutoSize |
+>>     Out-File "$out\top-processes.txt"
+>>
+>> # Services not running
+>> Write-Host "[DIAG] Collecting stopped services..."
+>> Get-Service |
+>>     Where-Object { $_.Status -ne 'Running' } |
+>>     Format-Table Status, Name, DisplayName -AutoSize |
+>>     Out-File "$out\stopped-services.txt"
+>>
+>> # Application event log — last 30 entries
+>> Write-Host "[DIAG] Collecting Application event log..."
+>> Get-EventLog -LogName Application -Newest 30 |
+>>     Format-List EventId, EntryType, TimeGenerated, Source, Message |
+>>     Out-File "$out\app-events.txt"
+>>
+>> # System event log — errors and warnings
+>> Write-Host "[DIAG] Collecting System event log..."
+>> Get-EventLog -LogName System -EntryType Error, Warning -Newest 20 |
+>>     Format-List EventId, EntryType, TimeGenerated, Source, Message |
+>>     Out-File "$out\sys-events.txt"
+>>
+>> # Network configuration
+>> Get-NetIPConfiguration |                                                                                             >>     Out-File "$out\ip-config.txt"                                                                                    >>                                                                                                                      >> netstat -an |                                                                                                        >>     Out-File "$out\netstat.txt"                                                                                      >>
+>> # Disk space
+>> Get-PSDrive -PSProvider FileSystem |
+>>     Format-Table Name, Used, Free, Root -AutoSize |
+>>     Out-File "$out\disk-space.txt"
+>>
+>> Write-Host "[DIAG] Done. Files saved to $out :"
+>> Get-ChildItem $out | Format-Table Name, Length -AutoSize
+>> '@ | Set-Content -Path C:\LabScripts\03-generate-diagnostics.ps1
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> # ── Verify ───────────────────────────────────────────────────────
+
+PS C:\Users\labadmin> Write-Host ""
+
+PS C:\Users\labadmin> Write-Host "=== Setup Complete ==="
+=== Setup Complete ===
+PS C:\Users\labadmin> Write-Host ""
+
+PS C:\Users\labadmin> Write-Host "Features:"
+Features:
+PS C:\Users\labadmin> Get-WindowsFeature Web-Server | Format-Table Name, Installed -AutoSize
+
+Name       Installed
+----       ---------
+Web-Server      True
+
+
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> Write-Host "Scripts:"
+Scripts:
+PS C:\Users\labadmin> Get-ChildItem C:\LabScripts\ | Format-Table Name, Length -AutoSize
+
+Name                        Length
+----                        ------
+01-cpu-stress.ps1              686
+02-generate-events.ps1        2040
+03-generate-diagnostics.ps1   2203
+
+
+PS C:\Users\labadmin>
+PS C:\Users\labadmin> Write-Host "Directories:"
+Directories:
+PS C:\Users\labadmin> Get-Item C:\LabScripts, C:\LabDiagnostics | Format-Table FullName -AutoSize
+
+FullName
+--------
+C:\LabScripts
+C:\LabDiagnostics
+
+
+PS C:\Users\labadmin>
