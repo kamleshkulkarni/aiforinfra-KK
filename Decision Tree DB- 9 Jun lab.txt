@@ -1,0 +1,41 @@
+START: AI produces a database refresh script, command, or execution plan
+│
+├─ Is this a READ-ONLY task? (e.g., checking sync status, listing backups, estimating DB size)
+│   YES → Use directly. Log the query and the AI-generated report.
+│   NO  ↓ [Data Modification / Overwrite Task]
+│
+├─ Does the target environment involve a PRODUCTION database?
+│   NO  → [Non-Prod / Dev / Staging]
+│         Ensure masking rules are applied if copying prod data down. 
+│         Proceed with standard lower-env change record.
+│   YES ↓ [High Risk: Overwriting or impacting Production]
+│
+├─ Does the refresh touch the ACTIVE PRIMARY production node, or does it drop/truncate data?
+│   YES ↓ [Highest Risk Category]
+│   │
+│   ├─ Does the change require dropping/truncating a live table/schema without an active backup?
+│   │   YES → STOP. Escalate to Lead DB Architect. Unrecoverable data loss risk.
+│   │   NO  ↓
+│   │
+│   ├─ Mandatory Multi-Peer Review required.
+│   │   Has a Senior DBA manually verified the target connection string and the pre-refresh backup status?
+│   │   NO  → Cannot proceed. Get designated reviewer.
+│   │   YES ↓
+│   │
+│   └─ Raise Emergency Change Record. Get CAB approval. Apply strictly during low-traffic maintenance window.
+│
+│   NO  [Read-replica refreshes, secondary sync adjustments, or metadata refreshes] ↓
+│
+├─ Does the AI output include SPECIFIC syntax (exact instance identifiers, connection strings, schema names)?
+│   NO  → AI output is vague or uses placeholders. Escalate to DBA team for clarification. Do not execute.
+│   YES ↓
+│
+├─ Is there a heavy batch, ETL job, or nightly backup actively running on the source/target?
+│   YES → Wait or schedule after the active window to avoid IOPS contention. Document the delay.
+│   NO  ↓
+│
+├─ Blast radius estimate: how large is the database, or how many downstream applications depend on it?
+│   >1 TB or >3 downstream application dependencies → Treat as Primary Prod change (Peer review + CAB required).
+│   ≤1 TB and ≤3 app dependencies ↓
+│
+└─ Raise standard Change Record. Validate pre-execution snapshot. Apply and document the AI output used.
