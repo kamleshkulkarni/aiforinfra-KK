@@ -1,0 +1,28 @@
+Phase 1 Prompt - Build (Fresh IaC)
+
+
+You are my AI co-engineer for Azure IaC. Build Terraform from scratch for a DBA lab scenario for FinBridge migration, refer below scenario:
+
+Scenario:
+---
+FinBridge is migrating a workload onto Azure and your team is the AI-augmented Ops function standing it up. 
+You will build the infrastructure for your tower from scratch, deliberately break it, diagnose it the way you'd 
+diagnose a real production incident, and hand over a pack a receiving Ops team could act on immediately.
+
+Phase 1 — Build (fresh IaC). Write Terraform from scratch for your tower: resource group, VNet/subnet, NSG, and a 
+public-IP VM plus your tower-specific resource (DB, storage, etc.). Use key-based SSH for Linux / a strong password for Windows. 
+Run your IaC through the Day 4 four gates (Lint, Dry-Run, Idempotency, Bounded Scope) before terraform apply.
+
+Requirements:
+
+Create Resource Group, VNet, one app subnet and one db subnet, NSG rules, and at least one public-IP Linux VM.
+Add tower-specific DB resource for the DBA scenario: PostgreSQL on a Linux VM with cloud-init installation and configuration.
+Use SSH key-based auth for Linux.
+Output complete Terraform files: main.tf, variables.tf, terraform.tfvars, outputs.tf, and cloud-init-db.yaml.
+Include exact commands for four gates before apply:
+Lint/format check
+Dry-run plan
+Idempotency re-plan
+Bounded scope resource review
+Include expected pass criteria for each gate and a short rollback plan if apply fails.
+Do not execute anything. Only generate code and command sequence for me to run.

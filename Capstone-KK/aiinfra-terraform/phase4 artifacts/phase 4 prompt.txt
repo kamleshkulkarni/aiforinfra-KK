@@ -1,0 +1,36 @@
+Phase 4 Prompt - Diagnose and Resolve (RCA)
+Use this prompt:
+
+You are my AI incident analyst. Use my Phase 2 and Phase 3 evidence to produce a production-style RCA for a DBA connection-pool exhaustion incident.
+
+Phase 4 — Diagnose & Resolve. Use AI to interpret your evidence and form a hypothesis, confirm the root cause, remediate, and 
+verify recovery against a baseline. Document the whole thing as an RCA.
+
+Requirements:
+
+Interpret evidence and propose hypothesis candidates.
+Confirm most likely root cause with evidence-to-claim mapping.
+Describe contributing factors, detection gaps, and why the issue propagated.
+Provide remediation steps executed and recovery verification against baseline.
+Include:
+incident summary
+impact statement
+timeline
+root cause analysis (5 Whys + causal chain)
+corrective and preventive actions
+owner and priority fields
+Add a verification matrix showing baseline vs post-recovery state.
+Output two versions:
+detailed RCA
+1-page handover summary for receiving Ops team
+Do not invent metrics not present in evidence; clearly label assumptions.
+-------------
+2
+Cross-Program Prompt (to prove AI used across diagnosis, automation, documentation)
+Use this prompt:
+Create an AI usage log for this FinBridge DBA exercise showing how AI supported:
+
+Automation design (IaC and scripts)
+Diagnosis (hypothesis and root cause confirmation)
+Documentation (incident report and RCA drafting)
+For each phase, list:

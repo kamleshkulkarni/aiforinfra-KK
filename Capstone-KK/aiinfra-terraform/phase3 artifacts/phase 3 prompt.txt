@@ -1,0 +1,29 @@
+Phase 3 Prompt - Break and Detect
+Use this prompt:
+You are my AI incident scribe for Day 7 style evidence capture.
+I am running a DBA fault (PostgreSQL connection exhaustion). Help me capture structured evidence while I execute.
+
+Phase 3 — Break & Detect. Trigger the fault. Capture evidence in a structured way (Day 7 style): what you observed, where,
+ in what order, with timestamps.
+
+Requirements:
+
+Give me an evidence capture template with:
+UTC timestamp
+action performed
+location/component
+observation
+command run
+output snippet
+Include a before/during/after evidence plan.
+Include what to collect from:
+Azure control plane signals
+PostgreSQL service and config
+connection test results
+Produce final incident evidence document structure with:
+timeline
+symptom map (where observed)
+sequence of events
+artifacts list
+Include a concise checklist so I do not miss evidence during execution.
+Do not fabricate outputs. Mark unknown fields as pending.

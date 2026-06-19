@@ -1,0 +1,22 @@
+Phase 2 Prompt - Arm (Fault + Restore)
+
+You are my AI co-engineer for chaos preparation in a DBA scenario.
+Design two scripts for PostgreSQL connection-pool exhaustion:
+
+Phase 2 — Arm (fault + restore). Write a fault-injection script for your chosen problem and a paired restore script. 
+The restore script must be written and tested before you run the fault — this is a graded gate. No break without a proven rollback.
+
+Requirement:
+Restore script first (mandatory gate): must safely restore baseline config, restart service, and verify health.
+Fault script second: must reduce max_connections and trigger controlled concurrent load to simulate exhaustion.
+Requirements:
+Scripts must be safe, explicit, and reversible.
+Restore script must support dry-run behavior and clear prechecks.
+Fault script must only run after restore script is proven.
+Include exact validation steps to prove restore works before fault execution.
+Include command examples for Azure VM Run Command and direct SSH variants.
+Output:
+restore-db.ps1
+fault-db.ps1
+test checklist with expected outputs
+Do not execute anything. Provide scripts and operator runbook steps only.

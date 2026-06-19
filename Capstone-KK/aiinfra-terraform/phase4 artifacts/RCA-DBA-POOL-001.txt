@@ -1,0 +1,141 @@
+PHASE 4 - DIAGNOSE & RESOLVE (RCA)
+Incident ID: DBA-POOL-001
+Date: 2026-06-19
+Scope: PostgreSQL connection pool exhaustion simulation and recovery
+Status: Resolved and verified against baseline
+
+=================================================================
+1) EVIDENCE REVIEWED (PHASE 2 + PHASE 3)
+=================================================================
+
+Phase 2 evidence files:
+- phase2 artifacts/fault-db.ps1
+- phase2 artifacts/restore-db.ps1
+- phase2 artifacts/fault-output.txt
+- phase2 artifacts/restore-output.txt
+- phase2 artifacts/restore-verify-output.txt
+- phase2 artifacts/restore-verify-readable.txt
+
+Phase 3 evidence files:
+- phase3 artifacts/incident-report.md
+- phase3 artifacts/execution-evidence.md
+
+Key evidence facts:
+- fault-db.ps1 intentionally changes max_connections from 20 to 1.
+- fault-db.ps1 restarts PostgreSQL and launches 5 concurrent queries:
+  SELECT pg_sleep(10);
+- restore-db.ps1 restores max_connections from 1 to 20, verifies pg_hba.conf,
+  restarts PostgreSQL, and runs SELECT 1 health check.
+- fault-output.txt, restore-output.txt, and restore-verify-output.txt each show:
+  code = ProvisioningState/succeeded
+  displayStatus = Provisioning succeeded
+- Phase 3 timeline confirms UTC-ordered sequence:
+  14:46:15 fault submitted, 14:46:17 stress queries launched,
+  14:46:26 restore submitted, 14:46:31 verification complete.
+
+=================================================================
+2) AI INTERPRETATION AND HYPOTHESIS
+=================================================================
+
+Hypothesis:
+The incident behavior is caused by an intentional database capacity constraint
+(max_connections = 1) combined with concurrent demand (5 parallel queries),
+which exhausts available connection slots and causes connection rejection for
+additional clients.
+
+Why this hypothesis fits the evidence:
+- Script-level intent in phase2 artifacts/fault-db.ps1 directly enforces the
+  constrained setting and adds concurrent load.
+- Phase 3 incident timeline and execution evidence align with this sequence.
+- Restoration script reverses exactly that setting and health check succeeds.
+
+Confidence level: High (direct code-path and timeline match).
+
+=================================================================
+3) ROOT CAUSE CONFIRMATION
+=================================================================
+
+Confirmed root cause:
+Intentional reduction of PostgreSQL max_connections from 20 to 1 on vm-db,
+followed by 5 concurrent pg_sleep(10) sessions, causing pool exhaustion.
+
+Causal chain:
+1. Configuration changed: max_connections 20 -> 1.
+2. PostgreSQL restarted to apply the non-runtime parameter change.
+3. Five concurrent connections started and consumed available capacity.
+4. Additional client connection attempts would fail with too-many-clients
+   behavior during the fault window.
+5. Restoration reversed configuration and restarted service.
+
+Contributing factors:
+- max_connections requires restart to apply (operational disruption window).
+- Single-instance lab design limits direct application-side telemetry.
+- Azure Run Command output is coarse (success state, minimal stdout/stderr).
+
+=================================================================
+4) REMEDIATION ACTIONS EXECUTED
+=================================================================
+
+Executed remediation (from phase2 artifacts/restore-db.ps1 and Phase 3 logs):
+1. Set max_connections back to 20 in postgresql.conf.
+2. Ensure listen_addresses remains configured.
+3. Ensure pg_hba.conf rule exists for labdb/labuser from 10.0.1.0/24.
+4. Restart PostgreSQL service.
+5. Run health check query: SELECT 1.
+
+Execution result evidence:
+- phase2 artifacts/restore-output.txt: ProvisioningState/succeeded
+- phase2 artifacts/restore-verify-output.txt: ProvisioningState/succeeded
+- phase3 artifacts/incident-report.md: restore and verification timestamps
+
+=================================================================
+5) BASELINE AND RECOVERY VERIFICATION
+=================================================================
+
+Baseline (pre-fault target):
+- max_connections = 20
+- PostgreSQL service active
+- Connectivity/health check successful
+- Access rule present for app subnet in pg_hba.conf
+
+Post-remediation verification:
+- Phase 3 evidence reports max_connections restored to 20.
+- Health check SELECT 1 completed successfully.
+- Restore command path completed with ProvisioningState/succeeded.
+
+Recovery verdict:
+Recovered to baseline for this lab scenario.
+
+=================================================================
+6) RCA CONCLUSION
+=================================================================
+
+Diagnosis:
+The fault mechanism and observed behavior are consistent with deliberate
+connection pool exhaustion caused by reducing max_connections and introducing
+parallel query load.
+
+Resolution:
+Service was restored by reverting max_connections to baseline, restarting
+PostgreSQL, and validating database health.
+
+Final status:
+RESOLVED. Baseline recovery verified using Phase 2 and Phase 3 evidence.
+
+=================================================================
+7) IMPROVEMENT ACTIONS (POST-INCIDENT)
+=================================================================
+
+Recommended improvements:
+1. Add active connection monitoring (pg_stat_activity) with threshold alerts.
+2. Add connection saturation alerts at 70% and 90% usage.
+3. Enable slow query logging and retention for stronger forensic evidence.
+4. Add periodic restore/fault drills with automated evidence capture.
+5. Consider pgBouncer to isolate app burst traffic from DB limits.
+
+RCA prepared from:
+- Phase 2 artifacts (fault/restore scripts and run-command outputs)
+- Phase 3 artifacts (incident timeline and execution evidence)
+
+Generated file:
+- phase4 artifacts/RCA-DBA-POOL-001.txt
